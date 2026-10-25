@@ -2,15 +2,15 @@
 
 使い方:
     uv run python -m app.ask "LoRAとは何ですか？"
-    uv run python -m app.ask            # 質問を省略すると、講座に固有の質問をする
+    uv run python -m app.ask             # 会話履歴を保持する対話モード
+    uv run python -m app.ask --chat      # 上と同じ対話モード
 
-ツールも会話履歴も持たない「素の」呼び出し。
-講座に固有のことを聞くと、「分からない」と答えるか、一般論でもっともらしく答える
-（講座の実際とは違う）ことを確かめよう。
+ツールは持たないが、対話モードでは前の質問と回答を会話履歴として保持する。
 （第3回で、用語集を検索できるエージェントにして改善する）
 """
 
 import argparse
+import time
 
 from google import genai
 from google.genai import errors
@@ -21,25 +21,70 @@ from app.config import MODEL, api_error_message, get_api_key
 DEFAULT_QUESTION = "AIE2026の講座の宿題にある「3レベル」とは何ですか？"
 
 
+def print_usage(response) -> None:
+    usage = response.usage_metadata
+    if usage is not None:
+        print(
+            f"[usage] 入力トークン: {usage.prompt_token_count or 0}, "
+            f"出力トークン: {usage.candidates_token_count or 0}"
+        )
+
+
+def print_response_time(start_time: float) -> None:
+    elapsed = time.perf_counter() - start_time
+    print(f"[応答時間] {elapsed:.3f} 秒")
+
+
 def ask(question: str) -> str:
     client = genai.Client(api_key=get_api_key())
+    start_time = time.perf_counter()
     response = client.models.generate_content(model=MODEL, contents=question)
-
-    # TODO(第1回 演習): response.usage_metadata から
-    #   入力トークン数と出力トークン数を表示してみよう（Copilotに頼んでよい）
-
+    print_response_time(start_time)
+    print_usage(response)
     return response.text
+
+
+def chat() -> None:
+    client = genai.Client(api_key=get_api_key())
+    session = client.chats.create(model=MODEL)
+    print("会話モードです。終了するには exit または quit と入力してください。")
+
+    try:
+        while True:
+            try:
+                question = input("[質問] ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+
+            if not question:
+                continue
+            if question.lower() in {"exit", "quit"}:
+                break
+
+            start_time = time.perf_counter()
+            response = session.send_message(question)
+            print_response_time(start_time)
+            print_usage(response)
+            print(f"[回答]\n{response.text}\n")
+    except errors.APIError as e:
+        print(api_error_message(e.code, e.message))
+        raise SystemExit(1)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="素のLLMに質問する")
-    parser.add_argument("question", nargs="?", default=DEFAULT_QUESTION)
+    parser.add_argument("question", nargs="?")
+    parser.add_argument("--chat", action="store_true", help="会話履歴を保持して続けて質問する")
     args = parser.parse_args()
 
     print(f"[model] {MODEL}")
-    print(f"[質問] {args.question}\n")
     try:
-        print(ask(args.question))
+        if args.chat or args.question is None:
+            chat()
+        else:
+            print(f"[質問] {args.question}\n")
+            print(ask(args.question))
     except errors.APIError as e:
         print(api_error_message(e.code, e.message))
         raise SystemExit(1)
